@@ -9,6 +9,9 @@ var Fs = require('fs');
 var Monitor = require('../lib/monitor');
 var Dgram = require('dgram');
 var Net = require('net');
+var Async = require('async');
+var SafeStringify = require('json-stringify-safe');
+var Wreck = require('wreck');
 
 
 // Declare internals
@@ -18,11 +21,12 @@ var internals = {};
 
 // Test shortcuts
 
+var lab = exports.lab = Lab.script();
 var expect = Lab.expect;
-var before = Lab.before;
-var after = Lab.after;
-var describe = Lab.experiment;
-var it = Lab.test;
+var before = lab.before;
+var after = lab.after;
+var describe = lab.describe;
+var it = lab.it;
 
 var clog = console.log;
 
@@ -70,7 +74,7 @@ describe('Monitor', function () {
 
                 var monitor = new Monitor(pack);
             };
-            expect(fn).to.not.throw(Error);
+            expect(fn).to.not.throw();
             done();
         });
     });
@@ -89,7 +93,7 @@ describe('Monitor', function () {
                 var monitor = new Monitor(pack, options);
             };
 
-            expect(fn).throws(Error, 'Invalid monitor.opsInterval configuration');
+            expect(fn).to.throw(Error, /opsInterval must be larger than or equal to 100/gi);
             done();
         });
     });
@@ -116,8 +120,43 @@ describe('Monitor', function () {
     it('throws an error if requestsEvent is not response or tail', function (done) {
 
         var options = {
-            subscribers: {},
             requestsEvent: 'test'
+        };
+
+        makePack(function (pack, server) {
+
+            var fn = function () {
+                var monitor = new Monitor(pack, options);
+            };
+
+            expect(fn).to.throw(Error, /requestsEvent must be one of response, tail/gi);
+            done();
+        });
+    });
+
+    it('throws an error if extra options are passed in', function (done) {
+
+        var options = {
+            subscriptionz: ['ops', 'error']
+        };
+
+        makePack(function (pack, server) {
+            var fn = function () {
+                var monitor = new Monitor(pack, options);
+            };
+
+            expect(fn).to.throw(Error, /invalid monitorOptions options/gi);
+            done();
+        });
+
+    });
+
+    it('throws an error if unsupported events are passed in', function (done) {
+
+        var options = {
+            subscribers: {
+                console: ['disconnect', 'request']
+            }
         };
 
         makePack(function (pack, server) {
@@ -127,9 +166,10 @@ describe('Monitor', function () {
                 var monitor = new Monitor(pack, options);
             };
 
-            expect(fn).throws(Error, 'Invalid monitor.requestsEvent configuration');
+            expect(fn).to.throw(Error, /position 0 fails because value must be one of ops, request, log, error/gi);
             done();
         });
+
     });
 
     it('requestsEvent is a response', function (done) {
@@ -296,6 +336,144 @@ describe('Monitor', function () {
                     };
 
                     Http.get('http://127.0.0.1:' + server.info.port + '/err');
+                });
+            });
+        });
+
+        it('displays payload events correctly', function (done) {
+
+            var options = {
+                subscribers: {
+                    'console': { events: ['request'] }
+                },
+                logRequestPayload: true,
+                logResponsePayload: true
+            };
+
+            var server = new Hapi.Server('127.0.0.1', 0);
+            server.route({
+                method: 'POST',
+                path: '/test',
+                handler: function (request, reply) {
+                    server.stop({timeout: 1});
+                    reply({bar: 'foo'});
+                }
+            });
+
+            var plugin = {
+                register: require('../lib/index').register,
+                options: options
+            }
+
+            server.pack.register(plugin, function (err) {
+
+               if (err) {
+                   console.log('did not register plugin: ' + err);
+               }
+            });
+
+            server.start(function () {
+
+                // trap console output so it doesnt show up in stdout
+                var trapConsole = console.log;
+                console.log = function(string) {
+
+                    expect(string).to.contain('response payload: {"bar":"foo"}');
+                    // reset console.log
+                    console.log = trapConsole;
+                    done();
+                };
+                var payload = JSON.stringify({ payload: { foo: "bar" } }); 
+                Wreck.request('POST', server.info.uri + '/test', payload);
+            });
+        });
+
+        it('displays payload events correctly circular', function (done) {
+
+            var options = {
+                subscribers: {
+                    'console': { events: ['request'] }
+                },
+                logRequestPayload: true,
+                logResponsePayload: true
+            };
+
+            var server = new Hapi.Server('127.0.0.1', 0);
+            server.route({
+                method: 'POST',
+                path: '/test',
+                handler: function (request, reply) {
+              
+                    reply(request.raw.req);
+                }
+            });
+
+            var plugin = {
+                register: require('../lib/index').register,
+                options: options
+            }
+
+            server.pack.register(plugin, function (err) {
+
+               if (err) {
+                   console.log('did not register plugin: ' + err);
+               }
+            });
+
+            server.start(function () {
+
+                // trap console output so it doesnt show up in stdout
+                var trapConsole = console.log;
+                console.log = function(string) {
+
+                    //console.error(string);
+                    expect(string).to.contain('response payload: ');
+                    expect(string).to.contain('[Circular ~]');
+                    // reset console.log
+                    console.log = trapConsole;
+                    done();
+                };
+                var payload = JSON.stringify({ payload: { foo: "bar" } }); 
+                Wreck.request('POST', server.info.uri + '/test', payload);
+            });
+        });
+
+
+        it('display events for objects that can not be stringified', function (done) {
+            var options = {
+                subscribers: {
+                    'console': { events: ['log'] }
+                }
+            };
+
+            var server = new Hapi.Server(0);
+            server.route({ method: 'GET', path: '/log', handler: function (request, reply) {
+                var t = {};
+                t.value = t;
+                request.server.log(['log'], t);
+                reply('ok');
+            }});
+
+            var plugin = {
+                register: require('../lib/index').register,
+                options: options
+            }
+
+            server.pack.register(plugin, function () {
+
+                server.start(function () {
+
+                    // trap console output so it doesnt show up in stdout
+                    var trapConsole = console.log;
+                    console.log = function(string) {
+
+                        expect(string).to.contain('JSON Error: Converting circular structure to JSON');
+                        // reset console.log
+                        console.log = trapConsole;
+                        done();
+                    };
+
+                    Http.get('http://127.0.0.1:' + server.info.port + '/log');
                 });
             });
         });
@@ -1376,6 +1554,32 @@ describe('Monitor', function () {
             });
         });
 
+        it('log pid for ops if options are set', function (done) {
+
+            var results = {
+                osload: 1,
+                osmem: 20,
+                osup: 50
+            };
+
+            var options = {
+                subscribers: {},
+                logPid: true
+            };
+
+            makePack(function (pack, server) {
+
+                var monitor = new Monitor(pack, options);
+
+                var event = monitor._ops()(results);
+
+                expect(event.os.load).to.equal(1);
+                expect(event.os.mem).to.equal(20);
+                expect(event.pid).to.exist;
+                done();
+            });
+        });
+
         it('emits ops data', function (done) {
 
             var options = {
@@ -1425,6 +1629,42 @@ describe('Monitor', function () {
                     monitor.stop();
                     done();
                 });
+            });
+        });
+
+        it('gracefully handles error conditions', function (done) {
+
+            var options = {
+                subscribers: {},
+                opsInterval: 100,
+                alwaysMeasureOps: true
+            };
+
+            makePack(function (pack, server) {
+
+                var parallel = Async.parallel;
+
+                Async.parallel = function (methods, callback) {
+
+                    var _callback = function (error, results) {
+
+                        callback(error, results);
+
+                        expect(error).to.exist;
+                        monitor.stop();
+                        Async.parallel = parallel;
+                        done();
+                    };
+
+                    methods.createError = function (callback) {
+
+                        return callback(new Error('there was an error during processing'));
+                    }
+
+                    parallel(methods, _callback);
+                }
+
+                var monitor = new Monitor(pack, options);
             });
         });
     });
@@ -1590,6 +1830,72 @@ describe('Monitor', function () {
                 expect(event.event).to.equal('request');
                 expect(event.source.userAgent).to.equal('test');
                 expect(event.log).to.deep.equal([item]);
+                done();
+            });
+        });
+
+        it('logs all headers when option is set', function (done) {
+
+            var options = {
+                subscribers: {},
+                logRequestHeaders: true
+            };
+
+            makePack(function (pack, server) {
+
+                var request = {
+                    raw: {
+                        req: {
+                            headers: {
+                                'foo': 'bar'
+                            }
+                        },
+                        res: {
+
+                        }
+                    },
+                    info: {},
+                    server: server,
+                    getLog: function () {}
+                };
+
+                var monitor = new Monitor(pack, options);
+
+                var event = monitor._request()(request);
+
+                expect(event.headers['foo']).to.equal('bar');
+                done();
+            });
+        });
+
+        it('logs pid for request when option is set', function (done) {
+
+            var options = {
+                subscribers: {},
+                logPid: true
+            };
+
+            makePack(function (pack, server) {
+
+                var request = {
+                    raw: {
+                        req: {
+                            headers: {
+                                'user-agent': 'test'
+                            }
+                        },
+                        res: {
+                        }
+                    },
+                    info: {},
+                    server: server,
+                    getLog: function () {}
+                };
+
+                var monitor = new Monitor(pack, options);
+
+                var event = monitor._request()(request);
+                expect(event.pid).to.exist;
                 done();
             });
         });
@@ -1781,7 +2087,195 @@ describe('Monitor', function () {
                     done();
                 });
             });
-        })
+        });
+
+        describe('print http verb', function() {
+
+              it('get', function (done) {
+
+                var options = {
+                    subscribers: {}
+                };
+
+                makePack(function (pack, server) {
+
+                    var monitor = new Monitor(pack, options);
+
+                    var events = [{
+                        event: 'request',
+                        instance: 'testInstance',
+                        method: 'get',
+                        statusCode: 200
+                    }];
+
+                    // trap console output so it doesnt show up in stdout
+                    var trapConsole = console.log;
+                    console.log = function(string) {
+
+                        expect(string).to.contain('[1;32mget');
+                    };
+                    monitor._display(events);
+                    // reset console.log back to normal
+                    console.log = trapConsole;
+                    done();
+                });
+            });
+
+            it('post', function (done) {
+
+                var options = {
+                    subscribers: {}
+                };
+
+                makePack(function (pack, server) {
+
+                    var monitor = new Monitor(pack, options);
+
+                    var events = [{
+                        event: 'request',
+                        instance: 'testInstance',
+                        method: 'post',
+                        statusCode: 200
+                    }];
+
+                    // trap console output so it doesnt show up in stdout
+                    var trapConsole = console.log;
+                    console.log = function(string) {
+
+                        expect(string).to.contain('[1;33mpost');
+                    };
+                    monitor._display(events);
+                    // reset console.log back to normal
+                    console.log = trapConsole;
+                    done();
+                });
+            });
+
+            it('put', function (done) {
+
+                var options = {
+                    subscribers: {}
+                };
+
+                makePack(function (pack, server) {
+
+                    var monitor = new Monitor(pack, options);
+
+                    var events = [{
+                        event: 'request',
+                        instance: 'testInstance',
+                        method: 'put',
+                        statusCode: 200
+                    }];
+
+                    // trap console output so it doesnt show up in stdout
+                    var trapConsole = console.log;
+                    console.log = function(string) {
+
+                        expect(string).to.contain('[1;36mput');
+                    };
+                    monitor._display(events);
+                    // reset console.log back to normal
+                    console.log = trapConsole;
+                    done();
+                });
+            });
+
+            it('delete', function (done) {
+
+                var options = {
+                    subscribers: {}
+                };
+
+                makePack(function (pack, server) {
+
+                    var monitor = new Monitor(pack, options);
+
+                    var events = [{
+                        event: 'request',
+                        instance: 'testInstance',
+                        method: 'delete',
+                        statusCode: 200
+                    }];
+
+                    // trap console output so it doesnt show up in stdout
+                    var trapConsole = console.log;
+                    console.log = function(string) {
+
+                        expect(string).to.contain('[1;31mdelete');
+                    };
+                    monitor._display(events);
+                    // reset console.log back to normal
+                    console.log = trapConsole;
+                    done();
+                });
+            });
+
+            it('other', function (done) {
+
+                var options = {
+                    subscribers: {}
+                };
+
+                makePack(function (pack, server) {
+
+                    var monitor = new Monitor(pack, options);
+
+                    var events = [{
+                        event: 'request',
+                        instance: 'testInstance',
+                        method: 'other',
+                        statusCode: 200
+                    }];
+
+                    // trap console output so it doesnt show up in stdout
+                    var trapConsole = console.log;
+                    console.log = function(string) {
+
+                        expect(string).to.contain('[1;34mother');
+                    };
+                    monitor._display(events);
+                    // reset console.log back to normal
+                    console.log = trapConsole;
+                    done();
+                });
+            });
+        });
+    });
+
+    describe('#_error', function () {
+
+        it('logs pid for error when option is set', function (done) {
+
+            var options = {
+                subscribers: {},
+                logPid: true
+            };
+
+            makePack(function (pack, server) {
+
+                var request = {
+                    raw: {
+                        req: {
+                            headers: {
+                                'user-agent': 'test'
+                            }
+                        },
+                        res: {
+                        }
+                    },
+                    info: {},
+                    server: server,
+                    getLog: function () {}
+                };
+
+                var monitor = new Monitor(pack, options);
+
+                var error = monitor._error()(request, { message: 'testerror', stack: 'thestack'} );
+                expect(error.pid).to.exist;
+                done();
+            });
+        });
     });
 
     describe('#_log', function () {
@@ -1802,5 +2296,49 @@ describe('Monitor', function () {
                 done();
             });
         });
+
+        it('logs pid for log when option is set', function (done) {
+
+            var options = {
+                subscribers: {},
+                logPid: true
+            };
+
+            makePack(function (pack, server) {
+
+                var monitor = new Monitor(pack, options);
+
+                var event = monitor._log()({});
+
+                expect(event.event).to.equal('log');
+                expect(event.pid).to.exist;
+                done();
+            });
+        });
     });
+
+    describe('#_eventsFilter', function () {
+
+        it('successfully returns a filter array', function (done) {
+
+            var result = Monitor.prototype._eventsFilter(['log'], [{
+                tags: ['log', 'error']
+            }]);
+
+            expect(result).to.exist;
+            expect(result.length).to.equal(1);
+            done();
+        });
+
+        it('gracefully handles "undefined" tags', function (done) {
+
+            var result = Monitor.prototype._eventsFilter(['log'], [{
+                tags: undefined
+            }]);
+
+            expect(result).to.exist;
+            expect(result.length).to.equal(0);
+            done();
+        });
+    })
 });

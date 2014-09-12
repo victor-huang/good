@@ -1,9 +1,8 @@
-<a href="https://github.com/spumko"><img src="https://raw.github.com/spumko/spumko/master/images/from.png" align="right" /></a>
 ![good Logo](https://raw.github.com/spumko/good/master/images/good.png)
 
 [**hapi**](https://github.com/hapijs/hapi) process monitoring
 
-[![Build Status](https://secure.travis-ci.org/spumko/good.png)](http://travis-ci.org/spumko/good)
+[![Build Status](https://secure.travis-ci.org/hapijs/good.png)](http://travis-ci.org/hapijs/good)
 
 Lead Maintainer: [Lloyd Benson](https://github.com/lloydbenson)
 
@@ -14,9 +13,9 @@ The _'Monitor'_ should be configured using a _'hapi'_ server instead of calling 
 - System and process performance (ops) - CPU, memory, disk, and other metrics.
 - Requests logging (request) - framework and application generated logs generated during the lifecycle of each incoming request.
 - General events (log) - logging information not bound to a specific request such as system errors, background processing,
-  configuration errors, etc. Described in [General Events Logging](#general-events-logging).
+  configuration errors, etc.
 - Internal errors (error) - request responses that have a status code of 500. Described in the
-  [server events documentation](http://spumko.github.io/resource/api/#server-events).
+  [server events documentation](https://github.com/hapijs/hapi/blob/master/docs/Reference.md#server-events).
 
 Applications with multiple server instances, each with its own monitor should only include one _log_ subscription per destination
 as general events are a process-wide facility and will result in duplicated log events. To override some or all of the defaults,
@@ -35,7 +34,12 @@ set `options` to an object with the following optional settings:
   The subscriptions that are available are _ops_, _request_, _log_ and _error_. The destination can be a URI, file or directory path, and _console_.
   Defaults to a console subscriber for _ops_, _request_, and _log_ events. To disable the console output for the server instance pass an empty array
   into the subscribers "console" configuration.
-
+- `extraFields` - an object containing extra fields to be included on the broadcast log message.
+- `logRequestHeaders` - determines if all request headers will be logged. Defaults to _false_
+- `logRequestPayload` - determines if the request payload will be logged. Defaults to _false_
+- `logResponsePayload` - determines if the response payload will be logged. Defaults to _false_
+- `logPid` - determines if the pid will be logged. Defaults to _false_
+  
 For example:
 
 ```javascript
@@ -86,10 +90,24 @@ var options = {
 };
 ```
 
-Log file subscribers can either be a file or a directory.  When logging to a file (there isn't a trailing slash) then the files will be written with the file name in the provided path.  Otherwise, when the subscriber is a directory the log files will be named with a timestamp and placed in the directory.  All log files will have .001, .002, and .003 formatted extensions.  Below is an example of file and directory subscribers:
+Log file subscribers can either be a file or a directory.  When logging to a file (there isn't a trailing slash) then the files will be written with the file name in the provided path.  Otherwise, when the subscriber is a directory the log files will be named with a timestamp and placed in the directory.
+
+Below is an example of file and directory subscribers when maxLogSize is not set (default).
 
 ```javascript
 var options = {
+    subscribers: {
+        '/logs/good_log': { tags: ['error'], events: ['log'] },     // Creates good_log file in /logs/
+        '/logs/': { events: ['request'] }                           // Creates {timestamp} file in /logs/
+    }
+};
+```
+
+If maxLogSize is set to be greater than 0 then all log files will have .00x formatted extensions.  Below is an example of file and directory subscribers:
+
+```javascript
+var options = {
+    maxLogSize: 1024 * 1024 * 1024, // 1 gig
     subscribers: {
         '/logs/good_log': { tags: ['error'], events: ['log'] },     // Creates good_log.001 file in /logs/
         '/logs/': { events: ['request'] }                           // Creates {timestamp}.001 file in /logs/
@@ -106,13 +124,23 @@ When **good** broadcasts data to a remote endpoint it sends json that has the fo
 - `appVer` - the version of **good**
 - `timestamp` - the current time of the server
 - `events` - an array of the events that are subscribed to
+- ... and any extra fields specified in the options
+
+```javascript
+var options = {
+  extraFields: {
+    'identifier': 'myapplication-logs'
+    'build': '0.1.0'
+  }
+}
+```
 
 
 ### Replaying request logs
 
 Good includes a _'replay'_ script that is capable of replaying any request events found in a log file.  Below is the command to use to execute _'replay'_:
 
-`replay -l log.json -h host -n #_of_concurrent_requests`
+`replay -l log.json -u http://host -n #_of_concurrent_requests`
 
 ### Redis Logging
 
